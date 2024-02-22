@@ -7,6 +7,7 @@ import datetime as dt
 import functools
 import hashlib
 import inspect
+import os
 
 import cloudpickle
 from beartype import beartype
@@ -44,6 +45,8 @@ class Cache:
             serializer: The serializer to use. If not specified, CloudPickleSerializer is used.
             storage: The storage to use. If not specified, LocalFileStorage is used.
         """
+        if os.getenv("NO_CACHE"):
+            pass
 
         self.serializer = serializer or CloudPickleSerializer()
         self.storage = storage or LocalFileStorage()
@@ -65,6 +68,9 @@ class Cache:
         storage: Optional[Storage] = None,
         ttl: Optional[dt.timedelta] = None,
     ):
+        if os.getenv("NO_CACHE"):
+            return fn
+
         """Cache the value of the wrapped function.
 
         Tries to find a cached result of the decorated function in persistent storage.
@@ -83,7 +89,6 @@ class Cache:
             ttl: The expiration time of the cache. If None, the cache will never expire.
                     Defaults to None.
         """
-
         if isinstance(ignore, str):
             ignore = [ignore]
 
@@ -131,46 +136,8 @@ class Cache:
         return f"{fn.__name__}-{key}.{serializer.extension}"
 
 
-class NoCache:
-    """A class used to turn off caching.
-
-    Example:
-    ```
-    cache = NoCache() if os.environ["DEBUG"] else Cache()
-
-    @cache.cache
-    def function():
-        ...
-    ```
-    """
-
-    def __repr__(self) -> str:
-        return "<NoCache>"
-
-    @staticmethod
-    def __call__(*decorator_args, **decorator_kwargs):
-        """Will call the decorated function every time and
-        return its result without any caching.
-        """
-
-        def _decorator(fn):
-            @functools.wraps(fn)
-            def _non_async_wrapper(*args, **kwargs):
-                return fn(*args, **kwargs)
-
-            @functools.wraps(fn)
-            async def _async_wrapper(*args, **kwargs):
-                return await fn(*args, **kwargs)
-
-            return _async_wrapper if is_async(fn) else _non_async_wrapper
-
-        return _decorator
-
-    cache = __call__  # Alias for backwards compatibility.
-
-
 class _CachedFunction:
-    """An interal class used as a wrapper."""
+    """An internal class used as a wrapper."""
 
     @beartype
     def __init__(
@@ -203,10 +170,14 @@ class _CachedFunction:
         key = self.cache._get_hash(fn, args, kwargs, self.serializer, self.ignore)
         key = self.cache._get_filename(fn, key, self.serializer)
         try:
+            if os.getenv("NO_READ_CACHE"):
+                raise FileNotFoundError
             return self.cache._get(key, self.serializer, self.storage, self.deadline)
         except (FileNotFoundError, CacheExpired) as exception:
             debug("Unable to get cached result for %s: %s", fn.__name__, exception)
             value = fn(*args, **kwargs)
+            if os.getenv("NO_WRITE_CACHE"):
+                return value
             self.cache._set(key, value, self.serializer, self.storage)
             return value
 
@@ -215,10 +186,14 @@ class _CachedFunction:
         key = self.cache._get_hash(fn, args, kwargs, self.serializer, self.ignore)
         key = self.cache._get_filename(fn, key, self.serializer)
         try:
+            if os.getenv("NO_READ_CACHE"):
+                raise FileNotFoundError
             return self.cache._get(key, self.serializer, self.storage, self.deadline)
         except (FileNotFoundError, CacheExpired) as exception:
             debug("Unable to get cached result for %s: %s", fn.__name__, exception)
             value = await fn(*args, **kwargs)
+            if os.getenv("NO_WRITE_CACHE"):
+                return value
             self.cache._set(key, value, self.serializer, self.storage)
             return value
 

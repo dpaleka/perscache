@@ -1,3 +1,3 @@
-__all__ = ["Cache", "NoCache"]
+__all__ = ["Cache"]
 
-from .cache import Cache, NoCache
+from .cache import Cache

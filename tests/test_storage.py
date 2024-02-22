@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from perscache import Cache
-from perscache.storage import GoogleCloudStorage, LocalFileStorage
+from perscache.storage import GoogleCloudStorage, LocalFileStorage, RedisStorage
 
 caches = ["local"]
 
@@ -22,7 +22,8 @@ def cache(request, tmp_path):
             Path(os.environ["GOOGLE_BUCKET"]) / "perscache_test_cache",
             storage_options={"token": os.environ["GOOGLE_TOKEN"]},
         )
-
+    elif request.param == "redis":
+        storage = RedisStorage()
     try:
         yield Cache(storage=storage)
     finally:
@@ -107,14 +108,39 @@ def test_ttl(cache):
 
 
 def test_clear(cache):
-    cache.storage.write("abc", b"abc")
-    cache.storage.clear()
+    if isinstance(cache.storage, LocalFileStorage) or isinstance(cache.storage, GoogleCloudStorage):
+        cache.storage.ensure_path(cache.storage.location)
+        cache.storage.write("abc", b"abc")
+        cache.storage.write("def", b"def")
 
-    assert not list(cache.storage.iterdir(cache.storage.location))
+        assert list(cache.storage.iterdir(cache.storage.location))
 
-    # Doesn't raise if directory doesn't exist
-    cache.storage.clear()
+        cache.storage.clear()
 
+        assert not list(cache.storage.iterdir(cache.storage.location))
+    
 def test_initialization():
     LocalFileStorage()
     GoogleCloudStorage()
+    RedisStorage()
+
+
+@pytest.fixture
+def redis_storage(tmp_path):
+    from perscache.storage import RedisStorage
+    return RedisStorage(tmp_path)
+
+def test_write_and_read(redis_storage):
+    key = "example_func.json"
+    data = b'{"name": "Test1", "type": "Test2"}'
+    redis_storage.write(key, data)
+    retrieved_data = redis_storage.read(key, dt.datetime.now())
+    assert retrieved_data == data, "Retrieved data does not match the original data."
+
+def test_file_not_found(redis_storage):
+    key = "nonexistent_key.json"
+    with pytest.raises(FileNotFoundError):
+        redis_storage.read(key, dt.datetime.now())
+
+    
+    

@@ -2,6 +2,7 @@ import datetime as dt
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+import redis
 from beartype import beartype
 from beartype.typing import Iterator, Optional, Union
 
@@ -220,3 +221,101 @@ class GoogleCloudStorage(FileStorage):
 
     def delete(self, path: Union[str, Path]) -> None:
         self.fs.rm(str(path))
+
+REDIS_CONFIG_DEFAULT = {
+    'host': 'localhost',
+    'port': 6379,
+    'db': 7,
+}
+
+class DbStorage(Storage):
+    """A generic database storage class."""
+
+    @abstractmethod
+    def read(self, path: Union[str, Path], deadline: dt.datetime) -> bytes:
+        """Read data from the database."""
+
+    @abstractmethod
+    def write(self, path: Union[str, Path], data: bytes) -> None:
+        """Write data to the database."""
+
+
+class RedisStorage(Storage):
+    """A Redis-specific storage class optimized for storing arbitrary JSON objects."""
+
+    @beartype
+    def __init__(
+        self,
+        namespace: Optional[Union[str, Path]] = "cache",
+        redis_config: Optional[dict] = None,
+    ):
+        """
+        Initialize the RedisStorage instance.
+
+        :param location: A namespace prefix for keys in Redis to avoid collisions.
+        :param redis_config: Configuration dictionary for Redis connection.
+        """
+        # Convert location to string to ensure compatibility with Redis key naming
+        self.namespace = str(namespace)
+        assert ":" not in self.namespace, "Namespace cannot contain ':'"
+        self.redis_config = redis_config if redis_config else REDIS_CONFIG_DEFAULT
+        self.db = self._connect()
+
+    def _connect(self):
+        """Establish a connection to the Redis server."""
+        return redis.Redis(**self.redis_config)
+
+    def read(self, path: str | Path, deadline: dt.datetime) -> bytes:
+        """
+        Read a JSON object from Redis.
+
+        :param path: The key associated with the JSON object.
+#        :param deadline: Not used in this implementation, provided for interface compatibility.
+        :return: The JSON object as bytes.
+        :raises FileNotFoundError: If the key does not exist in Redis.
+        """
+        key = self._make_key(path)
+        data = self.db.get(key)
+        if data is None:
+            raise FileNotFoundError(f"No data found for key: {key}")
+        
+        return data
+
+    def write(self, path: Union[str, Path], data: bytes) -> None:
+        """
+        Write a JSON object to Redis.
+
+        :param path: The key under which to store the JSON object.
+        :param data: The JSON object, serialized into bytes.
+        """
+        key = self._make_key(path)
+        self.db.set(key, data)
+
+    def _make_key(self, path: Union[str, Path]) -> str:
+        """
+        Generate a Redis key based on the given path and the location prefix.
+
+        :param path: The original key for the JSON object.
+        :return: A namespaced key for use in Redis.
+        """
+        return f"{self.namespace}:{str(path)}"
+
+    def __decode_key(self, key: str) -> str:
+        """
+        Decode a Redis key into its original form.
+
+        :param key: The Redis key.
+        :return: The original key for the JSON object.
+        """
+        return key.split(":", 1)[1]
+    
+    def get_all(self, namespace: str):
+        """
+        Get all keys and values from a given namespace.
+
+        :param namespace: The namespace to query.
+        :return: A dictionary of keys and values.
+        """
+        keys = self.db.keys(f"{namespace}:*")
+        print("len(keys):", len(keys))
+        return {self.__decode_key(key.decode('utf-8')): self.db.get(key) for key in keys}
